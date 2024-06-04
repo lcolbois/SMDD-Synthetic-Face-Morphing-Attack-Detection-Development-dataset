@@ -22,7 +22,7 @@ from torch.utils.data import Dataset, DataLoader
 from utils import performances_compute
 from backbones import mixnet_s
 
-device = torch.device('cuda:0')
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
 PRE__MEAN = [0.5, 0.5, 0.5]
 PRE__STD = [0.5, 0.5, 0.5]
@@ -229,8 +229,8 @@ def main(args):
         train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
         dataloaders = {'train': train_loader, 'val': test_loader}
-        dataset_sizes = {'train': len(train_dataset), 'val': len(test_loader)}
-        print('train and test length:', len(train_dataset), len(test_loader))
+        dataset_sizes = {'train': len(train_dataset), 'val': len(test_dataset)}
+        print('train and test length:', len(train_dataset), len(test_dataset))
 
         # compute loss weights to improve the unbalance between data
         attack_num, bonafide_num = 0, 0
