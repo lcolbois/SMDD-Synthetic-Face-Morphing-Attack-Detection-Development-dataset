@@ -154,9 +154,11 @@ def run_training(model, model_path, logging_path, normedWeights, num_epochs, dat
         if val_eer_values <= lowest_eer:
             lowest_eer = val_eer_values
             best_model_wts = copy.deepcopy(model.state_dict())
+            torch.save(best_model_wts, model_path)
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
+            torch.save(model, 'last.pth')
 
         if epochs_no_improve == EarlyStopPatience or epoch >= num_epochs:
             early_stop = True
@@ -171,9 +173,6 @@ def run_training(model, model_path, logging_path, normedWeights, num_epochs, dat
     print('Lowest EER: {:4f}'.format(lowest_eer))
     logging.info('Lowest EER: {:4f}'.format(lowest_eer))
     logging.info(f'saved model path: {model_path}')
-
-    # save best model weights
-    torch.save(best_model_wts, model_path)
 
 def run_test(test_loader, model, model_path, batch_size=64):
     model = model.to(device)
