@@ -23,6 +23,13 @@ from PIL import Image
 
 from utils import performances_compute
 from backbones import mixnet_s
+from mada.config import get_hydra_config_path
+from mada.utils import fix_randomness
+import hydra
+from omegaconf import DictConfig
+from mada.config.protocols import list_preprocessed_samples, list_subsets_for_gathered_set, folds_to_group
+from mada.utils import get_global_seed
+
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -239,76 +246,39 @@ def write_scores(test_csv, prediction_scores, output_path):
 
     print(f'Saving prediction scores in {output_path}.')
 
-def main(args):
-    Path(args.output_dir).mkdir(parents=True, exist_ok=True)
-    # model path that will used to save the trained model or where is the pre-trained weights
-    #model_path = os.path.join(args.output_dir, 'mixfacenet_SMDD')
+
+@hydra.main(
+    version_base=None,
+    config_path=get_hydra_config_path(),
+    config_name="mixfacenet_mad_training",
+)
+def main(cfg: DictConfig):
+    fix_randomness(cfg.seed)
+    df = pd.concat([list_preprocessed_samples(**subset).assign(**subset) for subset in list_subsets_for_gathered_set(cfg.train_set)])
+    df['group'] = folds_to_group(df['fold'])
+
+
+    train_dataset = FaceDataset(df.query('group == "train"').sample(frac=1, random_state=get_global_seed()), is_train=True)
+    test_dataset = FaceDataset(df.query('group == "test"').sample(frac=1, random_state=get_global_seed()), is_train=False)
+    train_loader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True)
+    test_loader = DataLoader(test_dataset, batch_size=cfg.batch_size, shuffle=False)
+
     model = mixnet_s(embedding_size=128, width_scale=1.0, gdw_size=1024, shuffle=False)
 
-    if args.is_train:
-        train_dataset = FaceDataset(args.train_csv_path, is_train=True)
-        test_dataset = FaceDataset(args.test_csv_path, is_train=False)
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-        test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
-        dataloaders = {'train': train_loader, 'val': test_loader}
-        dataset_sizes = {'train': len(train_dataset), 'val': len(test_dataset)}
-        print('train and test length:', len(train_dataset), len(test_dataset))
+    dataloaders = {'train': train_loader, 'val': test_loader}
+    dataset_sizes = {'train': len(train_dataset), 'val': len(test_dataset)}
+    print('train and test length:', len(train_dataset), len(test_dataset))
 
-        # compute loss weights to improve the unbalance between data
-        attack_num, bonafide_num = 0, 0
-        with open(args.train_csv_path, newline='') as csvfile:
-            reader = csv.DictReader(csvfile)
-            for row in reader:
-                if row['label'] == 'bonafide':
-                    bonafide_num += 1
-                else:
-                    attack_num += 1
-        print('attack and bonafide num:', attack_num, bonafide_num)
-
-        nSamples  = [attack_num, bonafide_num]
-        normedWeights = [1 - (x / sum(nSamples)) for x in nSamples]
-        normedWeights = torch.FloatTensor(normedWeights).to(device)
-
-        #create log file and train model
-        logging_path = os.path.join(args.output_dir, 'train_info.log')
-        run_training(model, args.model_path, logging_path, normedWeights, args.max_epoch, dataloaders, dataset_sizes)
-
-    if args.is_test:
-        # create save directory and path
-        test_output_folder = os.path.join(args.output_dir, 'test_results')
-        Path(test_output_folder).mkdir(parents=True, exist_ok=True)
-        test_output_path = os.path.join(test_output_folder, 'test_results.csv')
-        # test
-        test_dataset = FaceDataset(file_name=args.test_csv_path, is_train=False)
-        test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
-        test_prediction_scores = run_test(test_loader=test_loader, model=model, model_path=args.model_path)
-        write_scores(args.test_csv_path, test_prediction_scores, test_output_path)
+    logging_path = os.path.join(cfg.output_dir, 'train_info.log')
+    run_training(
+        model=model, 
+        model_path=cfg.output_dir, 
+        logging_path=logging_path, 
+        normedWeights=train_dataset.get_normed_weights(), 
+        num_epochs=cfg.max_epochs, 
+        dataloaders=dataloaders, 
+        dataset_sizes=dataset_sizes)
+    
 
 if __name__ == '__main__':
-
-    cudnn.benchmark = True
-
-    if torch.cuda.is_available():
-        print('GPU is available')
-        torch.cuda.manual_seed(0)
-    else:
-        print('GPU is not available')
-        torch.manual_seed(0)
-
-    import argparse
-    parser = argparse.ArgumentParser(description='MixFaceNet model')
-    parser.add_argument("--train_csv_path", default="dataset_info/train.csv", type=str, help="input path of train csv")
-    parser.add_argument("--test_csv_path", default="dataset_info/test.csv", type=str, help="input path of test csv")
-
-    parser.add_argument("--output_dir", default="output", type=str, help="path where trained model and test results will be saved")
-    parser.add_argument("--model_path", default="mixfacenet_SMDD", type=str, help="path where trained model will be saved or location of pretrained weight")
-
-    parser.add_argument("--is_train", default=True, type=lambda x: (str(x).lower() in ['true','1', 'yes']), help="train database or not")
-    parser.add_argument("--is_test", default=True, type=lambda x: (str(x).lower() in ['true','1', 'yes']), help="test database or not")
-
-    parser.add_argument("--max_epoch", default=100, type=int, help="maximum epochs")
-    parser.add_argument("--batch_size", default=16, type=int, help="train batch size")
-
-    args = parser.parse_args()
-
-    main(args)
+    main()
