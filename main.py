@@ -18,6 +18,7 @@ import torchvision
 from torchvision import transforms
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
+from torch.utils.tensorboard import SummaryWriter
 
 from utils import performances_compute
 from backbones import mixnet_s
@@ -131,6 +132,8 @@ def eval_fn(model, data_loader, data_size, criterion):
 
 def run_training(model, model_path, logging_path, normedWeights, num_epochs, dataloaders, dataset_sizes):
     model = model.to(device)
+    model_path = Path(model_path)
+    model_path.mkdir(parents=True, exist_ok=True)
     criterion = nn.CrossEntropyLoss(weight=normedWeights).to(device)
     optimizer=optim.Adam(model.parameters(), lr=0.0001, betas=(0.9, 0.999), eps=1e-08, weight_decay=1e-6)
 
@@ -141,24 +144,34 @@ def run_training(model, model_path, logging_path, normedWeights, num_epochs, dat
     epochs_no_improve = 0
     early_stop = False
 
+    tb_writer = SummaryWriter(log_dir = model_path / "tb_logs")
+
     for epoch in range(num_epochs):
         print('Epoch {}/{}'.format(epoch, num_epochs - 1))
         logging.info('Epoch {}/{}'.format(epoch, num_epochs - 1))
         logging.info('-' * 10)
+        tb_writer.add_scalar('epoch',epoch, epoch)
         # Each epoch has a training and validation phase
         train_loss, train_acc = train_fn(model, dataloaders['train'], dataset_sizes['train'], optimizer, criterion)
         val_loss, val_acc, val_eer_values = eval_fn(model, dataloaders['val'], dataset_sizes['val'], criterion)
         logging.info('train loss: {}, train acc: {}, val loss: {}, val acc: {}, val eer: {}'.format(train_loss, train_acc, val_loss, val_acc, val_eer_values))
 
+        tb_writer.add_scalar('loss/train',train_loss, epoch)
+        tb_writer.add_scalar('acc/train',train_acc, epoch)
+        tb_writer.add_scalar('loss/val',val_loss, epoch)
+        tb_writer.add_scalar('acc/val',val_acc, epoch)
+        tb_writer.add_scalar('eer/val',val_eer_values, epoch)
+
         # deep copy the model
         if val_eer_values <= lowest_eer:
             lowest_eer = val_eer_values
             best_model_wts = copy.deepcopy(model.state_dict())
-            torch.save(best_model_wts, model_path)
+            torch.save(best_model_wts, model_path / "best.pth")
             epochs_no_improve = 0
         else:
             epochs_no_improve += 1
-            torch.save(model, 'last.pth')
+        
+        torch.save(model, model_path/"last.pth")
 
         if epochs_no_improve == EarlyStopPatience or epoch >= num_epochs:
             early_stop = True
@@ -184,15 +197,16 @@ def run_test(test_loader, model, model_path, batch_size=64):
         for inputs, labels in tqdm(test_loader):
             inputs, labels= inputs.to(device), labels.to(device)
             outputs = model(inputs)
-            probs = F.softmax(outputs, dim=1)
+            #probs = F.softmax(outputs, dim=1)
 
-            for i in range(probs.shape[0]):
-                prediction_scores.append(float(probs[i][1].detach().cpu().numpy()))
+            for i in range(outputs.shape[0]):
+                prediction_scores.append(float(outputs[i][1].detach().cpu().numpy()))
                 gt_labels.append(int(labels[i].detach().cpu().numpy()))
 
-        std_value = np.std(prediction_scores)
-        mean_value = np.mean(prediction_scores)
-        prediction_scores = [ (float(i) - mean_value) /(std_value) for i in prediction_scores]
+        # What the hell ? Compute stats in evaluation mode ??? 
+        #std_value = np.std(prediction_scores)
+        #mean_value = np.mean(prediction_scores)
+        #prediction_scores = [ (float(i) - mean_value) /(std_value) for i in prediction_scores]
         _, eer_value, _ = performances_compute(prediction_scores, gt_labels, verbose=False)
         print(f'Test EER value: {eer_value*100}')
 
@@ -236,10 +250,10 @@ def main(args):
         with open(args.train_csv_path, newline='') as csvfile:
             reader = csv.DictReader(csvfile)
             for row in reader:
-                if row['label'] == 'attack':
-                    attack_num += 1
-                else:
+                if row['label'] == 'bonafide':
                     bonafide_num += 1
+                else:
+                    attack_num += 1
         print('attack and bonafide num:', attack_num, bonafide_num)
 
         nSamples  = [attack_num, bonafide_num]
