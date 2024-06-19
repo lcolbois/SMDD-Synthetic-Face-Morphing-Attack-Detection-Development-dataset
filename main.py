@@ -19,6 +19,7 @@ from torchvision import transforms
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 from torch.utils.tensorboard import SummaryWriter
+from PIL import Image
 
 from utils import performances_compute
 from backbones import mixnet_s
@@ -31,45 +32,53 @@ INPUT_SIZE = 224
 EarlyStopPatience = 20
 
 class FaceDataset(Dataset):
-    def __init__(self, file_name, is_train):
-        self.data = pd.read_csv(file_name)
+    def __init__(self, samples_df, is_train=True):
+        self.data = samples_df[["path", "attack"]]
         self.is_train = is_train
         self.train_transform = transforms.Compose(
             [
-             transforms.ToPILImage(),
                 transforms.Resize([INPUT_SIZE, INPUT_SIZE]),
-             transforms.RandomHorizontalFlip(),
-             transforms.ToTensor(),
-             transforms.Normalize(mean=PRE__MEAN,
-                                 std=PRE__STD),
-             ])
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=PRE__MEAN, std=PRE__STD),
+            ]
+        )
 
         self.test_transform = transforms.Compose(
-            [           transforms.ToPILImage(),
+            [
                 transforms.Resize([INPUT_SIZE, INPUT_SIZE]),
-             transforms.ToTensor(),
-             transforms.Normalize(mean=PRE__MEAN,
-                                 std=PRE__STD),
-             ])
+                transforms.ToTensor(),
+                transforms.Normalize(mean=PRE__MEAN, std=PRE__STD),
+            ]
+        )
 
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, index):
-        image_path = self.data.iloc[index, 0]
-        label_str = self.data.iloc[index, 1]
-        label = 1 if label_str == 'bonafide' else 0
+        item = self.data.iloc[index]
+        image = Image.open(item["path"]).convert("RGB")
+        label = 0 if item["attack"] == "bonafide" else 1
 
-        image=cv2.imread(image_path)
         try:
             if self.is_train:
                 image = self.train_transform(image)
             else:
                 image = self.test_transform(image)
         except ValueError:
-            print(image_path)
+            raise ValueError(f"Error with image {item['path']}")
 
         return image, label
+
+    def get_normed_weights(self):
+        # compute loss weights to improve the unbalance between data
+
+        bonafide_num = (self.data["attack"] == "bonafide").sum()
+        attack_num = (self.data["attack"] != "bonafide").sum()
+        n_samples = [attack_num, bonafide_num]
+        normed_weights = [1 - (x / sum(n_samples)) for x in n_samples]
+        return torch.FloatTensor(normed_weights)
+
 
 def train_fn(model, data_loader, data_size, optimizer, criterion):
     model.train()
