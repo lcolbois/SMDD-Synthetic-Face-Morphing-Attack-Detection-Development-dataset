@@ -26,7 +26,7 @@ from mada.config.protocols import (
     list_subsets_for_gathered_set,
     folds_to_group,
 )
-from mada.utils import get_global_seed
+from mada.utils import get_global_seed, attempt_data_copy_to_slurm_cluster
 
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -295,7 +295,14 @@ def main(cfg: DictConfig):
             for subset in list_subsets_for_gathered_set(cfg.train_set)
         ]
     )
+
     df["group"] = folds_to_group(df["fold"])
+
+    # Store info on training data
+    df[['path','group']].replace({'test': 'val'}).to_csv(os.path.join(cfg.output_dir, "used_samples.csv"), index=False)
+
+    df["path"] = attempt_data_copy_to_slurm_cluster(df["path"].tolist())
+
 
     train_dataset = FaceDataset(
         df.query('group == "train"').sample(frac=1, random_state=get_global_seed()),
@@ -305,8 +312,9 @@ def main(cfg: DictConfig):
         df.query('group == "test"').sample(frac=1, random_state=get_global_seed()),
         is_train=False,
     )
-    train_loader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True)
-    test_loader = DataLoader(test_dataset, batch_size=cfg.batch_size, shuffle=False)
+    num_workers = len(os.sched_getaffinity(0))
+    train_loader = DataLoader(train_dataset, batch_size=cfg.batch_size, shuffle=True, num_workers=num_workers)
+    test_loader = DataLoader(test_dataset, batch_size=cfg.batch_size, shuffle=False, num_workers=num_workers)
 
     model = mixnet_s(embedding_size=128, width_scale=1.0, gdw_size=1024, shuffle=False)
 
